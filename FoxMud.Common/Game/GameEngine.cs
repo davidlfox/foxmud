@@ -6,7 +6,32 @@ namespace FoxMud.Common.Game
 {
     public class GameEngine
     {
-        public async Task<Character?> Login(PlayerContext context, IDataStore dataStore)
+        private readonly IDataStore _db;
+        private CommandProcessor _commandProcessor;
+        private int tickNumber = 0;
+
+        public List<PlayerContext> LoggedInPlayers { get; } = new List<PlayerContext>();
+
+
+        public GameEngine(IDataStore db, CommandProcessor commandProcessor)
+        {
+            _db = db;
+            _commandProcessor = commandProcessor;
+        }
+
+        public async Task TickAsync()
+        {
+            // perform game state updates and send global tick announcements to players
+            await Task.FromResult(tickNumber++);
+            Console.WriteLine($"tick: {tickNumber}");
+        }
+
+        public async Task HandleCommandAsync(PlayerContext context, string input)
+        {
+            await _commandProcessor.ExecuteCommandAsync(context, input);
+        }
+
+        public async Task<Character?> Login(PlayerContext context)
         {
             bool loggedIn = false;
             Character? character = null;
@@ -19,17 +44,17 @@ namespace FoxMud.Common.Game
 
                 if (input.ToLower() == "new")
                 {
-                    character = await NewCharacterProcess(context.Connection, dataStore);
+                    character = await NewCharacterProcess(context.Connection);
                     loggedIn = true;
                 }
-                else if (dataStore.CharacterExists(input))
+                else if (_db.CharacterExists(input))
                 {
                     await context.Connection.WriteLineAsync("Enter your password:");
                     await context.Connection.FlushAsync();
                     
-                    if (await isValidPassword(context, dataStore, input))
+                    if (await isValidPassword(context, input))
                     {
-                        character = await dataStore.LoadCharacterAsync(input);
+                        character = await _db.LoadCharacterAsync(input);
                         loggedIn = true;
                     }
                     else
@@ -39,9 +64,9 @@ namespace FoxMud.Common.Game
                             await context.Connection.WriteLineAsync("Incorrect password. Try again.");
                             await context.Connection.FlushAsync();
 
-                            if (await isValidPassword(context, dataStore, input))
+                            if (await isValidPassword(context, input))
                             {
-                                character = await dataStore.LoadCharacterAsync(input);
+                                character = await _db.LoadCharacterAsync(input);
                                 loggedIn = true;
                             }
                         }
@@ -54,29 +79,42 @@ namespace FoxMud.Common.Game
                 }
             }
 
+            await CheckAndHandleDuplicateLoginAsync(character);
+
             return character;
         }
 
-        private async Task<bool> isValidPassword(PlayerContext context, IDataStore dataStore, string name)
+        private async Task<bool> isValidPassword(PlayerContext context, string name)
         {
             string password = await context.Connection.ReadLineAsync();
             string passwordHash = PasswordUtility.HashPassword(password);
 
-            var tempChar = await dataStore.LoadCharacterAsync(name);
+            var tempChar = await _db.LoadCharacterAsync(name);
             string? storedPasswordHash = tempChar?.PasswordHash;
 
             return storedPasswordHash == passwordHash;
         }
 
+        private async Task CheckAndHandleDuplicateLoginAsync(Character? character)
+        {
+            var existingPlayer = LoggedInPlayers.FirstOrDefault(p => p.Character?.Name == character?.Name);
+            if (existingPlayer != null)
+            {
+                await existingPlayer.Connection.WriteLineAsync("Another connection with the same name has been detected. Disconnecting...");
+                await existingPlayer.Connection.FlushAsync();
+                existingPlayer.Connection.Dispose();
+                LoggedInPlayers.Remove(existingPlayer);
+            }
+        }
 
-        public async Task<Character> NewCharacterProcess(IPlayerConnection connection, IDataStore dataStore)
+        public async Task<Character> NewCharacterProcess(IPlayerConnection connection)
         {
 
             await connection.WriteLineAsync("Enter your character's name:");
             await connection.FlushAsync();
             string name = await connection.ReadLineAsync();
 
-            bool characterExists = dataStore.CharacterExists(name);
+            bool characterExists = _db.CharacterExists(name);
 
             while(characterExists || name.ToLower() == "new")
             {
@@ -84,7 +122,7 @@ namespace FoxMud.Common.Game
                 await connection.FlushAsync();
 
                 name = await connection.ReadLineAsync();
-                characterExists = dataStore.CharacterExists(name);
+                characterExists = _db.CharacterExists(name);
             }
 
             await connection.WriteLineAsync("Enter your password:");
@@ -105,7 +143,7 @@ namespace FoxMud.Common.Game
             string desc = await connection.ReadLineAsync();
 
             // Save the new character
-            if (await dataStore.CreateCharacterAsync(name, passwordHash, @class, race, desc))
+            if (await _db.CreateCharacterAsync(name, passwordHash, @class, race, desc))
             {
                 await connection.WriteLineAsync($"Character '{name}' created!");
                 await connection.FlushAsync();
