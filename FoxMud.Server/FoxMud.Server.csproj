@@ -4,6 +4,10 @@
     <ProjectReference Include="..\FoxMud.Common\FoxMud.Common.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <PackageReference Include="ANSI.Console" Version="2.5.0" />
+  </ItemGroup>
+
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <TargetFramework>net6.0</TargetFramework>

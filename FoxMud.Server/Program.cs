@@ -1,5 +1,6 @@
 ﻿using System.Net;
 using System.Net.Sockets;
+using ANSIConsole;
 using FoxMud.Common.Data;
 using FoxMud.Common.Game;
 using FoxMud.Common.Interfaces;
@@ -60,8 +61,11 @@ class Program
         gameEngine.LoggedInPlayers.Add(context);
         var cancellationToken = new CancellationTokenSource();
         var processTasks = gameEngine.ProcessPlayerCommandsAsync(context, cancellationToken.Token);
-        await connection.WriteLineAsync($"Welcome, {context.Character.Name}!\r\n");
+        await connection.WriteLineAsync("\x1b[2J"); // clear screen
         await connection.FlushAsync();
+        await connection.WriteLineAsync($"Welcome, {context.Character.Name}!\r\n".Color(ConsoleColor.Green).ToString());
+        await connection.FlushAsync();
+        
         await gameEngine.DisplayPrompt(context);
 
         string input;
