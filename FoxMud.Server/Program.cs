@@ -11,15 +11,14 @@ namespace FoxMud.Server;
 class Program
 {
     private const int Port = 8888;
-    private const int TickLength = 1000;
 
     static async Task Main(string[] args)
     {
         var dataStore = new FileDataStore("Data");
-        var gameEngine = new GameEngine(dataStore, new CommandProcessor());
+        var gameEngine = new GameEngine(dataStore);
 
         // Start the tick system
-        var tickDuration = TimeSpan.FromMilliseconds(TickLength);
+        var tickDuration = TimeSpan.FromMilliseconds(gameEngine.TickLength);
         _ = StartTickSystemAsync(gameEngine, tickDuration);
 
         var listener = new TcpListener(IPAddress.Any, Port);
@@ -59,28 +58,23 @@ class Program
         }
 
         gameEngine.LoggedInPlayers.Add(context);
+        var cancellationToken = new CancellationTokenSource();
+        var processTasks = gameEngine.ProcessPlayerCommandsAsync(context, cancellationToken.Token);
         await connection.WriteLineAsync($"Welcome, {context.Character.Name}!\r\n");
         await connection.FlushAsync();
-        await DisplayPrompt(context);
+        await gameEngine.DisplayPrompt(context);
 
         string input;
         while ((input = await context.Connection.ReadLineAsync()).ToLower() != "quit")
         {
             await gameEngine.HandleCommandAsync(context, input.ToLower());
-            await DisplayPrompt(context);
         }
 
         await connection.WriteLineAsync("Goodbye!");
         await connection.FlushAsync();
         gameEngine.LoggedInPlayers.Remove(context);
+        cancellationToken.Cancel();
         
         connection.Dispose();
-    }
-
-    static async Task DisplayPrompt(PlayerContext context)
-    {
-        // Send the prompt
-        await context.Connection.WriteLineAsync($"[{context.Character?.Name} HP: 100/100 MP: 50/50]> ");
-        await context.Connection.FlushAsync();
     }
 }

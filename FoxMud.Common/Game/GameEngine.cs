@@ -1,3 +1,5 @@
+using System.Reflection;
+using FoxMud.Common.Game.Commands;
 using FoxMud.Common.Interfaces;
 using FoxMud.Common.Models;
 using FoxMud.Common.Utility;
@@ -7,16 +9,18 @@ namespace FoxMud.Common.Game
     public class GameEngine
     {
         private readonly IDataStore _db;
-        private CommandProcessor _commandProcessor;
+        private readonly Dictionary<string, ICommand> _commands = new Dictionary<string, ICommand>();
         private int tickNumber = 0;
+        public int TickLength = 1000;
+        private int CommandCheckInterval = 50;
 
         public List<PlayerContext> LoggedInPlayers { get; } = new List<PlayerContext>();
 
 
-        public GameEngine(IDataStore db, CommandProcessor commandProcessor)
+        public GameEngine(IDataStore db)
         {
             _db = db;
-            _commandProcessor = commandProcessor;
+            LoadCommands();
         }
 
         public async Task TickAsync()
@@ -28,7 +32,63 @@ namespace FoxMud.Common.Game
 
         public async Task HandleCommandAsync(PlayerContext context, string input)
         {
-            await _commandProcessor.ExecuteCommandAsync(context, input);
+            if (string.IsNullOrWhiteSpace(input))
+            {
+                if (context.CommandQueue.IsEmpty)
+                {
+                    await DisplayPrompt(context);
+                }
+                else
+                {
+                    context.CommandQueue.Enqueue(new NoOpCommand());
+                }
+            }
+            else
+            {
+                var command = ParseCommand(input);
+                if (command is null)
+                {
+                    await context.Connection.WriteLineAsync("Huh?");
+                    await context.Connection.FlushAsync();
+                }
+                else
+                {
+                    context.CommandQueue.Enqueue(command);
+                }
+            }
+        }
+
+        public async Task ProcessPlayerCommandsAsync(PlayerContext playerContext, CancellationToken cancellationToken)
+        {
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                if (!playerContext.CommandQueue.IsEmpty)
+                {
+                    var nextCommand = playerContext.CommandQueue.Dequeue();
+                    var roundsRemaining = nextCommand.RoundsToComplete;
+
+                    await nextCommand.ExecuteBeforeAsync(playerContext, this);
+
+                    while (roundsRemaining > 0)
+                    {
+                        await Task.Delay(TimeSpan.FromMilliseconds(this.TickLength));
+                        roundsRemaining--;
+                    }
+
+                    await nextCommand.ExecuteAfterAsync(playerContext, this);
+                }
+                else
+                {
+                    await Task.Delay(TimeSpan.FromMilliseconds(this.CommandCheckInterval));
+                }
+            }
+        }
+
+        public async Task DisplayPrompt(PlayerContext context)
+        {
+            // Send the prompt
+            await context.Connection.WriteLineAsync($"[{context.Character?.Name} HP: 100/100 MP: 50/50]> ");
+            await context.Connection.FlushAsync();
         }
 
         public async Task<Character?> Login(PlayerContext context)
@@ -152,6 +212,38 @@ namespace FoxMud.Common.Game
             }
 
             throw new NotImplementedException();
+        }
+
+        private void LoadCommands()
+        {
+            var commandTypes = Assembly.GetExecutingAssembly().GetTypes()
+                .Where(t => t.GetInterfaces().Contains(typeof(ICommand)) && t.GetCustomAttribute<CommandAttribute>() != null);
+
+            foreach (var type in commandTypes)
+            {
+                var attribute = type.GetCustomAttribute<CommandAttribute>();
+                var instance = Activator.CreateInstance(type) as ICommand;
+                if (attribute is null || instance is null) continue;
+                if (attribute.CommandName == "huh") continue;
+                _commands.Add(attribute.CommandName, instance);
+            }
+        }
+
+        public ICommand? ParseCommand(string input)
+        {
+            var split = input.Split(' ');
+            var commandName = split[0].ToLower();
+            if (_commands.TryGetValue(commandName, out var command))
+            {
+                if (split.Length > 1)
+                {
+                    command.Arguments = input.Replace(input.Split(' ')[0], "").Trim();
+                }
+
+                return command;
+            }
+
+            return null;
         }
     }
 }
